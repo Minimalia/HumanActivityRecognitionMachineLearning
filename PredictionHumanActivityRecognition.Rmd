@@ -1,0 +1,243 @@
+---
+title: "Human Activity Recognition using machine learning algorithms"
+author: "MJ"
+date: "July 24, 2016"
+output: html_document
+---
+
+# Sinopsis
+
+This study demonstrate the capabilities of a classifier trained based on  [Weight Lifting Exercises Dataset](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises#ixzz4ExRAtLLv) to predict how well Unilateral Dumbbell Biceps Curl activities were performed by the participants.
+
+Final classifier shows high accuracy (greater than 99%) on the tests done.
+
+# Training and test set
+
+Exploration, cleaning and partition of the data is done in this phase.
+
+```{r}
+library(caret)
+library(plotly)
+library(randomForest)
+```
+
+## Loading data
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Read more 
+[here](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises#ixzz4ExRAtLLv).
+
+Training and test data sets are loaded and seed is set to a value for reproducibility of the results of this study. As can be observed, 19622 samples of 159 potential features and the outcome are provided in the training set while 20 samples are provided in the test set that will be used as validation set in this study (only used in the end to perform prediction on them):
+
+```{r}
+training <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+dim(test)
+dim(training)
+
+# For reproducibility
+set.seed(8253)
+```
+
+## Filtering data
+
+Some features shows "division by zero" and "blanks" as values that must be treated as missing values in our data:
+
+```{r}
+
+# Blancs of divisions by 0 as NA:
+i <- training == "#DIV/0!"
+training[i] <- NA
+
+i <- training == ""
+training[i] <- NA
+
+```
+
+However missing values are not supported by most machine learning algorithms. Therefore, features with high ratio of missing values must be discarded (as the number of complete observations will be minimal):
+
+```{r}
+
+# Missing values are not good for machine learning algorithms
+# Therefore, analysis of missing data is required.
+naValues <- is.na(training)
+feat <- names(training)
+featClass <- unlist(lapply(training,class))
+ratioNA <- colSums(naValues)/dim(naValues)[1]
+expl <- data.frame(feat,featClass,ratioNA)
+
+# Shows features with missing data:
+g <- ggplot(aes(ratioNA,feat,color=featClass),data=expl)
+g <- g + geom_point()
+ggplotly(g)
+```
+
+As can be observed, there are features where more than 95% of their values are missing. That features will be discarded from the training set:
+
+```{r}
+featToDelete <- expl[expl$ratioNA > 0.95,]$feat
+
+# Subsetting data sets (excluding features with NA values)
+trainSet <- training[, !(names(training) %in% featToDelete)]
+```
+
+There are no missing observations in the training set:
+
+```{r}
+# TrainSet has no missing data now:
+sum(is.na(trainSet))
+
+```
+
+Additionally, there are features that by common sense must be avoided for prediction such as the name of the participant and they are filtered out:
+
+```{r}
+# Features that should not be used for prediction:
+# user_name cvtd_timestamp new_window X
+# raw_timestamp_part_1 raw_timestamp_part_2 num_window 
+trainSet <- subset(trainSet, select = -c(X,user_name,cvtd_timestamp,new_window))
+trainSet <- subset(trainSet, select = -c(raw_timestamp_part_1,raw_timestamp_part_2,num_window))
+```
+
+## Defining training set and test set
+
+In this step, a test set will be created from 20% of training data in order to have a small test set that could be used for classifiers comparison and further analysis.
+
+```{r}
+# Training set will be divided into training (80%) and test set (20%)
+trainSetIndex <- createDataPartition(trainSet$classe, p=0.8, list=FALSE)
+newTrainSet <- trainSet[trainSetIndex,]
+newTestSet <- trainSet[-trainSetIndex,]
+```
+
+Original test set will be used at the end of this study as a validation set just to submit predicted values on Coursera Project quizz.
+
+# Feature selection
+
+Feature selection is done in three steps:
+
+1. Verifying near zero variance predictors, however, none of the remaining fulfill the conditions:
+
+```{r}
+# Are there near zero variance predictors?
+nzvPredictors <- nearZeroVar(newTrainSet[,-53], saveMetrics=TRUE)
+nzvPredictors
+```
+
+2. Avoiding high correlation features. If correlation is greater than 0.9 between two features, redundant features will be discarded:
+
+```{r}
+# Correlations
+correlationMatrix <- cor(newTrainSet[, !(names(newTrainSet) %in% c("classe"))], use = "pairwise.complete.obs")
+highCorrelation <- findCorrelation(correlationMatrix,cutoff=0.9)
+# These are the features that are highly correlated:
+names(newTrainSet)[highCorrelation]
+```
+
+These features are discarded:
+
+```{r}
+# Filtering out the high correlated ones:
+newTrainSet <- newTrainSet[,-highCorrelation]
+
+```
+
+3. Applying Recursive Feature elimination using random forest classifiers and 10-fold cross-validation to verify the feature importance over the original data set and the accuracy obtained for the most important features selected on each stage:
+
+```{r}
+# Feature Selection
+# Recursive Feature elimination using random forest
+
+# Define the control using a random forest selection function
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+rfeFeatSelection <- rfe(newTrainSet[, !(names(newTrainSet) %in% c("classe"))], newTrainSet$classe, rfeControl=control)
+```
+
+Once the method is applied, the following figure is showing accuracy (after 10-fold cross-validation) versus number of variables used as predictors. Maximum accuracy is achieved once all predictors are taking into account:
+
+```{r}
+# plot the results
+plot(rfeFeatSelection, type=c("g", "o"))
+```
+
+Summary of the results is showing that all predictors are choosen by the method:
+
+```{r}
+# summarize the results
+rfeFeatSelection
+```
+
+Therefore, the final list of features that will be used is:
+
+```{r}
+# list the chosen features
+predictors(rfeFeatSelection)
+```
+
+
+# Classifiers comparison
+
+This section compares two classifiers: decission trees and random forest.
+
+## Decission trees
+
+Classification based on a trained decission tree is done:
+
+```{r}
+# First model: Classification trees
+mod1 <- train(classe ~.,method="rpart",data=newTrainSet)
+```
+
+The accuracy in the test set created during this exercise (out sample) is:
+
+```{r}
+# On test set (out sample)
+confusionMatrix(newTestSet$classe,predict(mod1,newTestSet))
+```
+
+ The accuracy on test set is poor. Therefore, there is the need of another classifier to improve prediction results.
+ 
+## Random forest
+
+Random forest is used to improve the results and achieve higher accuracy as could be observed in previous step when recursive feature elimination was performed using 10-fold cross-validation with random forest classifiers. 
+
+```{r}
+# Second model: Random forest
+mod2 <- randomForest(classe ~., data = newTrainSet, importance = FALSE)
+# Order by importance
+order(varImp(mod2), decreasing = TRUE)
+```
+
+The accuracy in the test set created during this exercise (out sample) is high (over 99%):
+
+```{r}
+# On test set (out sample)
+confusionMatrix(newTestSet$classe,predict(mod2,newTestSet))
+```
+
+The accuracy in the data set used for training (in sample) is 100% (able to fit all data):
+
+```{r}
+# On training set (in sample)
+confusionMatrix(newTrainSet$classe,predict(mod2,newTrainSet))
+```
+
+Accuracy shows impressive results in the test set. This classifier is used for final prediction over the original test data set.
+
+# Final prediction
+
+Random forest model trained in previous section is used to predict on the original test set. The results of the prediction are shown below:
+
+```{r}
+# On validation set, the prediction is:
+tmp <- as.data.frame(predict(mod2,test))
+
+finalPred <- cbind(row.names(tmp),tmp)
+names(finalPred) <- c("problem_id","prediction")
+finalPred
+```
+
+
+# Conclussions
+
+Random forest overperformed over a classification tree and high accuracy results are expected as could be seen in this exercise.
