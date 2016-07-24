@@ -2,7 +2,7 @@
 title: "Human Activity Recognition using machine learning algorithms"
 author: "MJ"
 date: "July 24, 2016"
-output: html_document
+output: github_document
 ---
 
 # Sinopsis
@@ -17,7 +17,6 @@ Exploration, cleaning and partition of the data is done in this phase.
 
 ```{r}
 library(caret)
-library(plotly)
 library(randomForest)
 ```
 
@@ -68,7 +67,7 @@ expl <- data.frame(feat,featClass,ratioNA)
 # Shows features with missing data:
 g <- ggplot(aes(ratioNA,feat,color=featClass),data=expl)
 g <- g + geom_point()
-ggplotly(g)
+print(g)
 ```
 
 As can be observed, there are features where more than 95% of their values are missing. That features will be discarded from the training set:
